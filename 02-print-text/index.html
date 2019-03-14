@@ -1,0 +1,64 @@
+<html>
+  <head>
+<script>
+  let device = null
+  // ENDPOINT number of the device
+  // which we're going to send the text to
+  const ENDPOINT = 3
+
+  // walk over all interfaces of the device
+  // check if they're claimed (and do claim them, if they're not yet)
+  const claimInterface = async d => {
+    for (const config of d.configurations) {
+      for (const iface of config.interfaces) {
+        if (!iface.claimed) {
+          await d.claimInterface(iface.interfaceNumber)
+          return d
+        }
+      }
+    }
+    return d
+  }
+
+  // setup the device
+	async function setup(rawdevice) {
+    // open the device (initiate communication)
+    await rawdevice.open()
+    // select the devices configuration descriptor
+    await rawdevice.selectConfiguration(1)
+    // claim the device interfaces
+		rawdevice = await claimInterface(rawdevice)
+		device = rawdevice
+		return rawdevice
+	}
+
+  // send a string of data to the device
+	async function print() {
+    // fetch value from input
+    const string = document.getElementById('text-to-print').value.trim()
+    // use the built in TextEncoder to
+    // convert a String to an Uint8Array containing utf-8 encoded text
+		const encoder = new TextEncoder()
+    const data = encoder.encode(string)
+    // send the bytes to the printer
+    await device.transferOut(ENDPOINT, data)
+	}
+
+  // connect to the device
+	async function connect() {
+		if (device === null) {
+      // get all connected usb devices
+      rawdevice = await navigator.usb.requestDevice({filters: []})
+      // do the setup procedure on the connected device
+			return setup(rawdevice)
+		}
+		return device
+	}
+</script>
+</head>
+<body>
+<button id="connect" onclick="connect()">Connect</button><br/>
+<input type="text" id="text-to-print" value=""/>
+<button id="print" onclick="print()">Print</button>
+</body>
+</html>

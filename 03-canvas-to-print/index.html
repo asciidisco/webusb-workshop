@@ -1,0 +1,228 @@
+<!DOCTYPE html>
+<html>
+    <head>
+      <title>Print canvas</title>
+      <style>canvas { border: solid 1px red }</style>
+    </head>
+    <body>
+        <button id="auth">Connect printer</button><br>
+        <canvas width=300 height=120></canvas><br>
+        <button id="print">print</button><br>
+        <script>
+          // OUT endpoint of interface for the printer
+          const ENDPOINT = 3
+
+          // some constants (control commands)
+          // that we use to steer the printer:
+
+          // sets the printer mode
+          const ESC = 0x1b
+          // control command to set a printer mode
+          const GS = 0x1d
+          // Line feed
+          const LF = 0x0a
+          // printer modes we can utilize
+          const PrintModes = {
+            EIGHT_DOT_DENSITY: 0,
+            TWENTY_FOUR_DOT_DENSITY: 33,
+          }
+
+          // helper function that lets us draw on a canvas
+          // using the (mouse) pointer
+          const canvasDraw = canvas => {
+            const ctx = canvas.getContext('2d')
+            // local pointer state
+            let pointerDown = false
+            canvas.onpointerdown = function () {
+              pointerDown = true
+            }
+            canvas.onpointerup = function () {
+              pointerDown = false
+            }
+            // draws a filled rectangle at (x, y) position 
+            // whose size is determined by width and height 
+            // and whose style is determined by the fillStyle attribute.
+            // void ctx.fillRect(x, y, width, height);
+            canvas.onpointermove = async function (event) {
+              if (pointerDown === false) return
+              ctx.fillStyle = 'black'
+              ctx.fillRect(event.layerX, event.layerY, 3, 3)
+            }
+          }
+
+          // walks through all of the interfaces of a WebUSB device
+          // checks if they're already claimed (and claimes them if not yet done)
+          const claimInterface = async device => {
+            for (const config of device.configurations) {
+              for (const iface of config.interfaces) {
+                if (!iface.claimed) {
+                  await device.claimInterface(iface.interfaceNumber)
+                  return true
+                }
+              }
+            }
+            return false
+          }
+
+          // set the line spacing on the POS printer,
+          // which is set to x33 (which is suitable for barcodes for example)
+          async function setLineSpacing (device, dotSpacing) {
+            return await sendBytes(device, new Uint8Array([ESC, 0x33, dotSpacing]))
+          }
+
+          // helper function that turns chars into their byte equivalent
+          function charToByte (char) {
+            return String.prototype.charCodeAt.call(char)
+          }
+
+          // helper function that turns strings into their byte representation
+          function stringToBytes (str) {
+            return Array.from(str).reduce((prev, char) => {
+              prev.push(charToByte(char))
+              return prev
+            }, [])
+          }
+
+          // reset the device, will set it to factory default
+          async function reset (device) {
+            try { 
+              return await sendBytes(device, new Uint8Array([ESC, 0x40]))
+            } catch (error) {
+              console.log(error)
+            } 
+          }
+
+          // send text to the WebUSB device
+          async function sendText(device, str) {
+            const bytes = new Uint8Array(stringToBytes(str))
+            return await device.transferOut(ENDPOINT, bytes)
+          }
+
+          // send bytes to the WebUSB device
+          async function sendBytes(device, bytes) {
+            return await device.transferOut(ENDPOINT, bytes)
+          }
+
+          // helper function to set a specific character style on the printer
+          async function setCharacterStyle(device, style = { smallFont: false, emphasized: false, doubleHeight: false, doubleWidth: false, underline: false }) {
+            let v = 0
+            // some byte shifting to turn the human readable
+            // object into its byte representation according to the
+            // POS specifications
+            if (style.smallFont) v |= 1 << 0
+            if (style.emphasized) v |= 1 << 3
+            if (style.doubleHeight) v |= 1 << 4
+            if (style.doubleWidth) v |= 1 << 5
+            if (style.underline) v |= 1 << 7
+            return await sendBytes(device, new Uint8Array([ESC, 0x21, v]))
+          }
+
+          // sends an image to the printer,
+          // takes the raw image data extracted from the canvas as input
+          async function printImage(device, imageData, dpi = 8) {
+            // we set the line spacing to match the dpi (dots per inch)
+            // we selected for our drawing
+            await setLineSpacing(device, dpi)
+            // calculate the image width (as given from the canvas)
+            const imageWidth = imageData[0].length
+            // switch the printer mode based on the given dpi number
+            const mode = dpi === 8 ? PrintModes.EIGHT_DOT_DENSITY : PrintModes.TWENTY_FOUR_DOT_DENSITY
+
+            // throw an error if the image width does not correspond with the selected dpi
+            // because if we don't, we'll receive some interesting pieces of art
+            // that are not quite the output we're expecting
+            if (imageData.length % dpi != 0) {
+              throw new Error(`Image height must be divisible by ${dpi} currently is ${imageData.length}`);
+            }
+
+            // iterate over the image data line by line
+            // and send the raw bytes to the printer
+            for (let y = 0; y < imageData.length; y += dpi) {
+              await sendBytes(
+                device,
+                new Uint8Array([
+                  ESC,
+                  0x2a,
+                  mode,
+                  (0x00ff & imageWidth), // nL low byte,
+                  (0xff00 & imageWidth) >> 8, // nH height byte
+                ])
+              )
+
+              await sendBytes(device, verticalSliceImage(imageData, imageWidth, y, dpi))
+              // add a line-feed at the end 
+              await sendBytes(device, new Uint8Array([LF]))
+            }
+            // reset line spacing
+            await setLineSpacing(device, 30)
+          }
+
+          // slice the image, which means, walk over every pixel in the image (vertically)
+          // and convert it to its byte equivalent
+          function verticalSliceImage(img, imageWidth, yOffset = 0, dpi = 8) {
+            // determine number of bytes, based on the dpi
+            const bytesPerSlice = dpi/8
+            // convrt bitmap data to slices of bytes
+            const ret = new Uint8Array(imageWidth * bytesPerSlice).fill(0)
+            for (let x = 0; x < imageWidth; x++) {
+              for (let byte = 0; byte < bytesPerSlice; byte++) {
+                for (let y = byte * 8 + yOffset; y < byte * 8 + 8 + yOffset; y++) {
+                  const setBitValue = 1 << (7 - y % 8)
+                  ret[x * bytesPerSlice + byte] |= img[y][x] ? setBitValue : 0
+                }
+              }
+            }
+            return ret
+          };
+
+          (async () => {
+            // preapre canvas
+            const canvas = document.querySelector('canvas')
+            canvasDraw(canvas)
+
+            // vent handler that opens up "connect to usb device" dialog
+            document.querySelector('#auth').addEventListener('click', async function (event) {
+              const devices = await navigator.usb.getDevices()
+              if (devices.length) {
+                if (devices[0].opened === false) {
+                  await devices[0].open()
+                }
+
+              navigator.usb
+                .requestDevice({ filters: [] })
+                .then(async device => {
+                  window.device = device
+                  await claimInterface(device)
+                  // reset device commands, just in case
+                  await reset(device)        
+                  await setCharacterStyle(device, {
+                    smallFont: false,
+                    emphasized: false,
+                    underline: false,
+                    doubleWidth: false,
+                    doubleHeight: false
+                  })
+                })
+              }             
+            })
+
+            // add vent handler that sends the canvas contents to the printer
+            document.querySelector('#print').addEventListener('click', async event => {
+              const imageData = []
+              const ctx = canvas.getContext('2d')
+              const canvasData = ctx.getImageData(0, 0, canvas.width, canvas.height)
+
+              // collect the bitmap data from the canvas
+              for (let y = 0; y < canvas.height; y++) {
+                imageData.push([])
+                for (let x = 0; x < canvas.width; x++) {
+                  imageData[y][x] = canvasData.data[y * (canvas.width * 4) + x * 4 + 3] === 0 ? 0 : 1
+                }
+              }
+              // print the image
+              await printImage(window.device, imageData, 24)
+            })
+        })();  
+        </script>
+    </body>
+</html>

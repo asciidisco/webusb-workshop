@@ -1,0 +1,91 @@
+<html>
+  <head>
+<script>
+  let device = null
+  let interfaceStats = [] 
+  // walk over all interfaces of the device
+  // check if they're claimed (and do claim them, if they're not yet)
+  const claimInterface = async d => {
+    for (const config of d.configurations) {
+      for (const iface of config.interfaces) {
+        interfaceStats.push(iface)
+        if (!iface.claimed) {
+          await d.claimInterface(iface.interfaceNumber)
+          return d
+        }
+      }
+    }
+    return d
+  }
+
+  // setup the device
+	async function setup(rawdevice) {
+    // open the device (initiate communication)
+    await rawdevice.open()
+    // select the devices configuration descriptor
+    await rawdevice.selectConfiguration(1)
+    // claim the device interfaces
+		rawdevice = await claimInterface(rawdevice)
+		device = rawdevice
+		return rawdevice
+	}
+
+  // display connection status
+  function changeConnectedHeadline () {
+    document.getElementById('is-connected').textContent = 'Device connected!'
+  }
+
+  // display device meta
+  function displayDeviceStats (rawdevice) {
+    document.getElementById('device-stats-headline').style.visibility = 'visible'
+    const $ul = document.getElementById('device-stats-list')
+    // add manufacturer name
+    const $manu = document.createElement('li')
+    $manu.innerHTML = `<strong>Manufacturer Name:</strong>&nbsp;<i>${rawdevice.manufacturerName}</i>` 
+    $ul.appendChild($manu) 
+    // add product name
+    const $pn = document.createElement('li')
+    $pn.innerHTML = `<strong>Product Name:</strong>&nbsp;<i>${rawdevice.productName}</i>` 
+    $ul.appendChild($pn) 
+    // add serial number
+    const $se = document.createElement('li')
+    $se.innerHTML = `<strong>Serial:</strong>&nbsp;<i>${rawdevice.serialNumber}</i>` 
+    $ul.appendChild($se) 
+    // add product id
+    const $id = document.createElement('li')
+    $id.innerHTML = `<strong>Product id:</strong>&nbsp;<i>${rawdevice.productId}</i>` 
+    $ul.appendChild($id) 
+    // add vendor id
+    const $vid = document.createElement('li')
+    $vid.innerHTML = `<strong>Vendor id:</strong>&nbsp;<i>${rawdevice.vendorId}</i>` 
+    $ul.appendChild($vid) 
+    // add number of interfaces
+    const $ifaces = document.createElement('li')
+    $ifaces.innerHTML = `<strong>Interfaces:</strong>&nbsp;<i>${interfaceStats.length}</i>` 
+    $ul.appendChild($ifaces) 
+    // display interface stats in console
+    console.log(interfaceStats)
+  }
+
+  // connect to the device
+	async function connect() {
+		if (device === null) {
+      // get all connected usb devices
+      rawdevice = await navigator.usb.requestDevice({filters: []})
+      // do the setup procedure on the connected device
+      device = await setup(rawdevice)
+      // display the device stats
+      displayDeviceStats(device)
+      changeConnectedHeadline()
+		}
+		return device
+	}
+</script>
+</head>
+<body>
+  <h1 id="is-connected">No device connected</h1>
+  <h2 id="device-stats-headline" style="visibility: hidden">Device stats:</h2>
+  <ul id="device-stats-list"></ul>
+  <button id="connect" onclick="connect()">Connect</button>
+</body>
+</html>
